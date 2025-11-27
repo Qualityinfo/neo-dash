@@ -59,13 +59,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const obstaclesRef = useRef<RenderObstacle[]>([]);
   const cameraXRef = useRef<number>(0);
   const scoreRef = useRef<number>(0);
+
+  // Prop Refs (To access latest props inside the frozen closure of the loop)
+  const gameStateRef = useRef(gameState);
+  const levelRef = useRef(level);
+  const onGameOverRef = useRef(onGameOver);
+  const onVictoryRef = useRef(onVictory);
+  const setScoreRef = useRef(setScore);
+
+  // Keep Refs in sync with React Props
+  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+  useEffect(() => { levelRef.current = level; }, [level]);
+  useEffect(() => { onGameOverRef.current = onGameOver; }, [onGameOver]);
+  useEffect(() => { onVictoryRef.current = onVictory; }, [onVictory]);
+  useEffect(() => { setScoreRef.current = setScore; }, [setScore]);
   
-  // Initialize Level
+  // Initialize/Reset Game Logic
   useEffect(() => {
     if (gameState === GameState.PLAYING) {
       resetGame();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState, level]);
 
   const resetGame = () => {
@@ -79,7 +93,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     };
     cameraXRef.current = 0;
     scoreRef.current = 0;
-    setScore(0);
+    
+    // We update the ref, but we should also safely reset the displayed score
+    if (setScoreRef.current) setScoreRef.current(0);
 
     // Convert relative offsets to absolute X positions for physics
     let currentX = 600; // Start a bit ahead
@@ -87,9 +103,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       currentX += obs.xOffset;
       // Calculate Y based on grid system (0 is ground)
       const yPos = CANVAS_HEIGHT - GROUND_HEIGHT - (obs.yLevel * BLOCK_SIZE) - BLOCK_SIZE;
-      
-      // Spikes sit on the floor/block, so adjust visually if needed
-      // but logically they take up the block space
       
       return {
         x: currentX,
@@ -142,10 +155,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
   };
 
+  // Physics Update
   const update = () => {
-    if (gameState !== GameState.PLAYING) return;
+    // Access state via Refs to ensure loop sees current state without re-binding
+    if (gameStateRef.current !== GameState.PLAYING) return;
 
     const p = playerRef.current;
+    const currentLevel = levelRef.current;
     
     // 1. Move Physics
     p.dy += GRAVITY;
@@ -161,9 +177,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
 
     // Move camera/world
-    cameraXRef.current += level.speed;
-    scoreRef.current = Math.floor(cameraXRef.current / 100);
-    setScore(scoreRef.current);
+    cameraXRef.current += currentLevel.speed;
+    
+    // OPTIMIZED SCORE UPDATE: Only trigger React render if score changes
+    const newScore = Math.floor(cameraXRef.current / 100);
+    if (newScore > scoreRef.current) {
+        scoreRef.current = newScore;
+        setScoreRef.current(newScore);
+    }
 
     // 2. Floor Collision
     const floorY = CANVAS_HEIGHT - GROUND_HEIGHT - PLAYER_SIZE;
@@ -172,10 +193,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     let isSupported = false;
 
     // 3. Obstacle Collision
-    // The player's logical X is always p.x
-    // The obstacle's logical X is obs.x - cameraXRef.current
-    
-    // Bounding Box of Player
     const playerRect = {
       l: p.x + 4, // Hitbox slightly smaller than visual
       r: p.x + PLAYER_SIZE - 4,
@@ -201,7 +218,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         // Victory Condition
         if (obs.type === 'FINISH_LINE' as any) {
             if (p.x > obsScreenX) {
-                onVictory(scoreRef.current);
+                onVictoryRef.current(scoreRef.current);
                 return;
             }
         }
@@ -221,9 +238,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
         if (colliding) {
             if (obs.type === ObstacleType.SPIKE || obs.type === ObstacleType.FLYING_SPIKE) {
-                // Precise Triangle collision for spikes could be added here
-                // For now, slightly generous box collision for spikes is usually fine in fast games
-                // But let's make the spike hitbox smaller
                 const spikePad = 10;
                 const spikeColliding = !(playerRect.r < obsRect.l + spikePad || 
                                        playerRect.l > obsRect.r - spikePad || 
@@ -236,8 +250,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 }
             } else if (obs.type === ObstacleType.BLOCK) {
                 // Resolve Block Collision
-                // Determine collision side
-                
                 const overlapY = Math.min(playerRect.b - obsRect.t, obsRect.b - playerRect.t);
                 const overlapX = Math.min(playerRect.r - obsRect.l, obsRect.r - playerRect.l);
 
@@ -253,7 +265,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                         // Hitting head on bottom (bonk)
                         p.y = obs.y + BLOCK_SIZE;
                         p.dy = 0;
-                        die(); // Geometry Dash usually kills you if you hit your head on a block while jumping too late, or you just slide. Let's kill for difficulty.
+                        die();
                         return;
                     }
                 } else {
@@ -265,7 +277,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         }
     }
 
-    // Check if fell off logic (not really possible with current floor, but good for gaps)
+    // Check if fell off logic
     if (!isSupported && p.y < floorY) {
         p.onGround = false;
     }
@@ -273,7 +285,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const die = () => {
     playerRef.current.dead = true;
-    onGameOver(scoreRef.current);
+    onGameOverRef.current(scoreRef.current);
   };
 
   const draw = () => {
@@ -281,19 +293,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    
+    // Access current theme via ref
+    const currentTheme = levelRef.current.themeColor;
 
     // Clear Screen
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Draw Background
-    // Gradient Sky
     const bgGradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
     bgGradient.addColorStop(0, '#0f172a');
     bgGradient.addColorStop(1, '#1e293b');
     ctx.fillStyle = bgGradient;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Draw Grid lines for "tech" feel (moving with camera)
+    // Draw Grid lines
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
     ctx.lineWidth = 1;
     const offsetX = -(cameraXRef.current % 40);
@@ -316,8 +330,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     
     // Ground Line (Neon)
     ctx.shadowBlur = 10;
-    ctx.shadowColor = level.themeColor;
-    ctx.strokeStyle = level.themeColor;
+    ctx.shadowColor = currentTheme;
+    ctx.strokeStyle = currentTheme;
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(0, CANVAS_HEIGHT - GROUND_HEIGHT);
@@ -338,20 +352,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
         if (obs.type === ObstacleType.BLOCK) {
             ctx.fillStyle = '#000000';
-            ctx.strokeStyle = level.themeColor;
+            ctx.strokeStyle = currentTheme;
             ctx.lineWidth = 2;
             ctx.fillRect(screenX, obs.y, BLOCK_SIZE, BLOCK_SIZE);
             ctx.strokeRect(screenX, obs.y, BLOCK_SIZE, BLOCK_SIZE);
             
-            // Inner detail
-            ctx.fillStyle = level.themeColor;
+            ctx.fillStyle = currentTheme;
             ctx.globalAlpha = 0.3;
             ctx.fillRect(screenX + 8, obs.y + 8, BLOCK_SIZE - 16, BLOCK_SIZE - 16);
             ctx.globalAlpha = 1.0;
         } else if (obs.type === ObstacleType.SPIKE || obs.type === ObstacleType.FLYING_SPIKE) {
             ctx.fillStyle = '#000000';
-            ctx.strokeStyle = '#ff0000'; // Spikes usually red or theme color? Let's go Red for danger or White.
-            if(obs.type === ObstacleType.SPIKE) ctx.strokeStyle = level.themeColor; 
+            ctx.strokeStyle = (obs.type === ObstacleType.SPIKE) ? currentTheme : '#ff0000';
             
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -362,9 +374,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.fill();
             ctx.stroke();
             
-            // Glow effect for spikes
             ctx.shadowBlur = 10;
-            ctx.shadowColor = level.themeColor;
+            ctx.shadowColor = currentTheme;
             ctx.stroke();
             ctx.shadowBlur = 0;
         }
@@ -377,34 +388,35 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.rotate((p.rotation * Math.PI) / 180);
     ctx.translate(-(p.x + PLAYER_SIZE / 2), -(p.y + PLAYER_SIZE / 2));
 
-    ctx.fillStyle = level.themeColor; // Player matches level theme
+    ctx.fillStyle = currentTheme;
     ctx.fillRect(p.x, p.y, PLAYER_SIZE, PLAYER_SIZE);
     
-    // Player inner face/icon
     ctx.fillStyle = '#000000';
     ctx.fillRect(p.x + 8, p.y + 8, PLAYER_SIZE - 16, PLAYER_SIZE - 16);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(p.x + 12, p.y + 12, 6, 6); // Eye
-    ctx.fillRect(p.x + 22, p.y + 12, 6, 6); // Eye
+    ctx.fillRect(p.x + 12, p.y + 12, 6, 6);
+    ctx.fillRect(p.x + 22, p.y + 12, 6, 6);
     
     ctx.restore();
-    
-    // Trail Effect (Simple)
-    // Could implement a trail buffer if needed, but skipping for simplicity
   };
 
-  // Main Loop
+  // Main Loop - Detached from Props to prevent infinite re-renders
   useEffect(() => {
     const loop = () => {
       update();
       draw();
       requestRef.current = requestAnimationFrame(loop);
     };
+    
+    // Start Loop
     requestRef.current = requestAnimationFrame(loop);
+    
+    // Cleanup
     return () => {
         if(requestRef.current) cancelAnimationFrame(requestRef.current);
     }
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run ONCE on mount
 
   return (
     <div className="relative group">
