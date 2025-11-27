@@ -3,12 +3,8 @@ import { Level, ObstacleType } from "../types";
 import { NEON_COLORS } from "../constants";
 
 export const generateLevel = async (prompt: string): Promise<Level> => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    throw new Error("API_KEY environment variable is not set");
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
+  // Use process.env.API_KEY directly as per guidelines.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   const obstacleSchema: Schema = {
     type: Type.OBJECT,
